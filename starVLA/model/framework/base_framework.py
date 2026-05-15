@@ -21,22 +21,53 @@ from starVLA.training.trainer_utils import initialize_overwatch
 
 logger = initialize_overwatch(__name__)
 _FRAMEWORKS_IMPORTED = False
+_WM4A_IMPORTED = False
+
+# World-model / video-DiT frameworks: pull diffusers + flash-attn at import time.
+# Defer importing WM4A unless needed so QwenPI / LIBERO runs do not require WM4A deps.
+_WM4A_FRAMEWORK_IDS = frozenset(
+    {
+        "WanJointVideoAction",
+        "CosmoPredict2OFT",
+        "WanOFT",
+        "WanGR00T",
+        "CosmoPredict2GR00T",
+        "WanPI",
+        "CosmoPredict2PI",
+    }
+)
 
 
-def _auto_import_framework_modules() -> None:
-    global _FRAMEWORKS_IMPORTED
+def _import_wm4a_submodules() -> None:
+    framework_dir = Path(__file__).resolve().parent
+    sub_dir = framework_dir / "WM4A"
+    if not sub_dir.is_dir():
+        return
+    for _, sub_name, _ in pkgutil.iter_modules([str(sub_dir)]):
+        if sub_name.startswith("_"):
+            continue
+        importlib.import_module(f"starVLA.model.framework.WM4A.{sub_name}")
+
+
+def _auto_import_framework_modules(framework_id: str) -> None:
+    global _FRAMEWORKS_IMPORTED, _WM4A_IMPORTED
     if _FRAMEWORKS_IMPORTED:
+        if framework_id in _WM4A_FRAMEWORK_IDS and not _WM4A_IMPORTED:
+            logger.info("Loading WM4A framework modules (lazy) for `%s`", framework_id)
+            _import_wm4a_submodules()
+            _WM4A_IMPORTED = True
         return
 
     _SKIP = {"__init__", "base_framework", "share_tools"}
     framework_dir = Path(__file__).resolve().parent
 
-    # Scan top-level modules (backwards compat)
+    # Scan top-level modules (backwards compat). Skip WM4A here — imported lazily when needed.
     for _, module_name, is_pkg in pkgutil.iter_modules([str(framework_dir)]):
         if module_name in _SKIP:
             continue
         if is_pkg:
-            # Scan sub-packages (VLM4A/, WM4A/, etc.)
+            if module_name == "WM4A":
+                continue
             sub_dir = framework_dir / module_name
             for _, sub_name, _ in pkgutil.iter_modules([str(sub_dir)]):
                 if sub_name.startswith("_"):
@@ -46,6 +77,11 @@ def _auto_import_framework_modules() -> None:
             importlib.import_module(f"starVLA.model.framework.{module_name}")
 
     _FRAMEWORKS_IMPORTED = True
+
+    if framework_id in _WM4A_FRAMEWORK_IDS:
+        logger.info("Loading WM4A framework modules for `%s`", framework_id)
+        _import_wm4a_submodules()
+        _WM4A_IMPORTED = True
 
 
 def build_framework(cfg): # The single entry point for building different model frameworks
@@ -59,9 +95,8 @@ def build_framework(cfg): # The single entry point for building different model 
     if not hasattr(cfg, "framework") or not hasattr(cfg.framework, "name"):
         raise ValueError("Missing `cfg.framework.name`. The framework API now only accepts `framework.name`.")
 
-    _auto_import_framework_modules()
-
     framework_id = cfg.framework.name
+    _auto_import_framework_modules(framework_id)
     if framework_id not in FRAMEWORK_REGISTRY._registry:
         available = sorted(FRAMEWORK_REGISTRY._registry.keys())
         raise NotImplementedError(

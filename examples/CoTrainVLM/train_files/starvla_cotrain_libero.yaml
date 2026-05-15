@@ -9,7 +9,7 @@ version_id: "0.21"
 framework:
   name: QwenGR00T
   qwenvl:
-    base_vlm: ./playground/Pretrained_models/Qwen2.5-VL-3B-Instruct-Action
+    base_vlm: /SSD_DISK/users/wuruihan/starVLA/playground/Pretrained_models/Qwen2.5-VL-3B-Instruct-Action
     attn_implementation: flash_attention_2
     vl_hidden_dim: 2048
   dino:

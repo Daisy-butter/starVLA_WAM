@@ -32,15 +32,25 @@ Other experimental results will be released soon.
 
 For training, the Calvin dataset must be converted into **LeRobot format**.
 
-1. Convert the original Calvin dataset to LeRobot format.
-   Please refer to **RoboTron-Mani (ICCV 2025)** for detailed instructions:
+1. Download the **original** CALVIN split (see [mees/calvin dataset README](https://github.com/mees/calvin/blob/main/dataset/README.md)) and convert to LeRobot v2 layout for StarVLA:
+
+   ```bash
+   export CALVIN_BASE=/SSD_DISK/users/wuruihan/sii_starvla/calvin_abc_d
+   export SPLIT=ABC       # ABC→D (~517GB); or `D` (~166GB), `ABCD`, `debug` (~1.3GB)
+   export STARVLA_ROOT=/path/to/starVLA
+   bash examples/calvin/scripts/prepare_calvin_data.sh
+   ```
+
+   RoboTron-Mani reference implementation (zip-based conversion):  
    👉 [https://github.com/EmbodiedAI-RoboTron/RoboTron-Mani/tree/lerobot/examples/calvin](https://github.com/EmbodiedAI-RoboTron/RoboTron-Mani/tree/lerobot/examples/calvin)
 
-2. Copy the modality definition file:
+2. Copy the modality definition file (done automatically by the script above; or run manually):
 
    ```bash
    cp examples/calvin/train_files/modality.json <lerobot_dataset_path>/meta/modality.json
    ```
+
+   Default layout on disk: `<CALVIN_BASE>/<split>_lerobot/meta/modality.json` (e.g. `task_ABC_D_lerobot/`).
 
 ---
 
@@ -59,6 +69,15 @@ Training and evaluation use **different dataset formats**:
 
 ---
 
+## ⚙️ 0b. Calvin eval conda environment (optional)
+
+```bash
+export CALVIN_BASE=/SSD_DISK/users/wuruihan/sii_starvla/calvin_abc_d
+bash examples/calvin/scripts/install_calvin_env.sh
+```
+
+---
+
 ## ⚙️ 1. Configure Data Mix
 
 Configure the Calvin data mix in:
@@ -70,12 +89,15 @@ starVLA/dataloader/gr00t_lerobot/mixtures.py
 Example configuration:
 
 ```python
+"calvin_task_ABC_D": [
+    ("task_ABC_D_lerobot", 1.0, "libero_franka"),
+],
 "calvin_task_D_D": [
-    ("task_D_D", 1.0, "libero_franka"),
+    ("task_D_D_lerobot", 1.0, "libero_franka"),
 ],
 ```
 
-Make sure the key name (e.g. `calvin_task_D_D`) matches the one used during training.
+Make sure the key name (e.g. `calvin_task_ABC_D`) matches the one used during training.
 
 ---
 
@@ -84,7 +106,7 @@ Make sure the key name (e.g. `calvin_task_D_D`) matches the one used during trai
 ⚠️ **Before training**, please double-check the following paths in
 `examples/calvin/train_files/run_calvin_train.sh`:
 
-* `calvin_data_root`: Path to the **LeRobot-format Calvin dataset**
+* `calvin_data_root`: Parent directory that contains the **`<split>_lerobot/`** folder (e.g. `task_ABC_D_lerobot/`). Default in `run_calvin_train.sh`: `/SSD_DISK/users/wuruihan/sii_starvla/calvin_abc_d`, or override with `CALVIN_BASE`.
 * `data_mix`: Must match the key defined in `mixtures.py`
 
 Start training with:

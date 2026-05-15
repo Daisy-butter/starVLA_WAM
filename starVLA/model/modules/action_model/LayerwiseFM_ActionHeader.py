@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.distributions import Beta
+from torch.utils.checkpoint import checkpoint
 from transformers import PretrainedConfig
 from transformers.feature_extraction_utils import BatchFeature
 
@@ -277,6 +278,7 @@ class LayerwiseFlowmatchingActionHead(nn.Module):
         self.beta_dist = Beta(action_config.noise_beta_alpha, action_config.noise_beta_beta)
         self.num_timestep_buckets = action_config.num_timestep_buckets
         self.config = action_config
+        self._dit_gradient_checkpointing = bool(action_config.get("enable_dit_gradient_checkpointing", False))
 
     def sample_time(self, batch_size, device, dtype):
         sample = self.beta_dist.sample([batch_size]).to(device, dtype=dtype)
@@ -328,11 +330,25 @@ class LayerwiseFlowmatchingActionHead(nn.Module):
         # Layerwise cross-attention with vl_embs
         model_output = sa_embs
         for layer_idx, layer in enumerate(self.model.transformer_blocks):
-            model_output = layer(
-                hidden_states=model_output,
-                encoder_hidden_states=vl_embs_list[layer_idx],  # Use layer-specific vl_embs
-                temb=temb,
-            )
+            enc_hs = vl_embs_list[layer_idx]
+            if self.training and self._dit_gradient_checkpointing:
+
+                def _layer_forward(hs, enc, tb, blk=layer):
+                    return blk(
+                        hidden_states=hs,
+                        attention_mask=None,
+                        encoder_hidden_states=enc,
+                        encoder_attention_mask=None,
+                        temb=tb,
+                    )
+
+                model_output = checkpoint(_layer_forward, model_output, enc_hs, temb, use_reentrant=False)
+            else:
+                model_output = layer(
+                    hidden_states=model_output,
+                    encoder_hidden_states=enc_hs,
+                    temb=temb,
+                )
 
         # TODO miss self att and _process_output, but work well
         pred = self.action_decoder(model_output)

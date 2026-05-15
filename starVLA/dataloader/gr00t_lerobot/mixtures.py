@@ -360,6 +360,19 @@ DATASET_NAMED_MIXTURES = {
         # ("OXE_LEROBOT_DATASET/bridge_orig_1.0.0_lerobot", 1.0, "oxe_bridge"),
     ],
     
+    "calvin_task_D_D": [
+        ("task_D_D_lerobot", 1.0, "libero_franka"),
+    ],
+
+    "calvin_task_ABC_D": [
+        ("task_ABC_D_lerobot", 1.0, "libero_franka"),
+    ],
+
+    # Small official debug split (~1.3GB) for pipeline / smoke tests — NOT a subset of task_ABC_D.
+    "calvin_debug_smoke": [
+        ("calvin_debug_dataset_lerobot", 1.0, "libero_franka"),
+    ],
+
     "calvin_task_D_D_v3.0": [
         ("calvin_task_D_D_v3.0", 1.0, "libero_franka"),
     ],

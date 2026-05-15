@@ -156,14 +156,25 @@ class VLATrainer(TrainerUtils):
 
     def _init_wandb(self):
         """Initialize Weights & Biases."""
-        if self.accelerator.is_main_process:
-            wandb.init(
-                name=self.config.run_id,
-                dir=os.path.join(self.config.output_dir, "wandb"),
-                project=self.config.wandb_project,
-                entity=self.config.wandb_entity,
-                group="vla-train",
-            )
+        if not self.accelerator.is_main_process:
+            return
+        # Numeric usernames in YAML / CLI become int in OmegaConf; wandb requires str entity.
+        if os.environ.get("WANDB_MODE", "").lower() == "disabled":
+            wandb.init(mode="disabled")
+            logger.info("WANDB_MODE=disabled — wandb sync off (no login / upload).")
+            return
+        entity = getattr(self.config, "wandb_entity", None)
+        if entity is not None and str(entity).strip() != "":
+            entity = str(entity)
+        else:
+            entity = None
+        wandb.init(
+            name=str(self.config.run_id),
+            dir=os.path.join(self.config.output_dir, "wandb"),
+            project=self.config.wandb_project,
+            entity=entity,
+            group="vla-train",
+        )
 
     def _save_initial_configs(self):
         """Save full config and training script at the very start of training."""

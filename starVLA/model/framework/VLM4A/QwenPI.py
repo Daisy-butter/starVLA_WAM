@@ -62,6 +62,8 @@ class QwenPIDefaultConfig:
             "vl_hidden_dim": 2048,
             # Number of VL transformer layers (auto-set at runtime)
             "num_vl_layers": 36,
+            # Trades compute for ~30–50% less activation memory on the VLM backbone
+            "enable_gradient_checkpointing": False,
         }
     )
 
@@ -92,6 +94,7 @@ class QwenPIDefaultConfig:
             # DiT architecture settings — shape fields (num_layers,
             # input_embedding_dim, cross_attention_dim, num_attention_heads)
             # are auto-populated by populate_layerwise_dit_cfg at runtime.
+            "enable_dit_gradient_checkpointing": False,
             "diffusion_model_cfg": {
                 "dropout": 0.2,
                 "final_dropout": True,
@@ -208,7 +211,8 @@ class Qwen_PI(baseframework):
         base_hidden = vl_embs_list[-1]
 
         # Step 4: Action Expert Forward and Loss
-        with torch.autocast("cuda", dtype=torch.float32):
+        # Use bf16 (not fp32): fp32 autocast materializes huge DiT activations and OOMs 24GB GPUs.
+        with torch.autocast("cuda", dtype=torch.bfloat16):
             # Label alignment: take the last chunk_len segment
             actions = torch.tensor(
                 np.array(actions), device=base_hidden.device, dtype=base_hidden.dtype
@@ -216,11 +220,11 @@ class Qwen_PI(baseframework):
             actions_target = actions[:, -self.action_horizon :, :]  # (B, action_horizon, action_dim)
 
             repeated_diffusion_steps = (
-                self.config.framework.action_model.get("repeated_diffusion_steps", 4)
+                int(self.config.framework.action_model.get("repeated_diffusion_steps", 2))
                 if self.config and hasattr(self.config, "framework")
-                else 4
+                else 2
             )
-            repeated_diffusion_steps = 2  # NO repeat for big action FM
+            repeated_diffusion_steps = max(1, repeated_diffusion_steps)
             actions_target_repeated = actions_target.repeat(repeated_diffusion_steps, 1, 1)
             # Repeat features for each layer
             vl_embs_list_repeated = [h.repeat(repeated_diffusion_steps, 1, 1) for h in vl_embs_list]
@@ -277,8 +281,8 @@ class Qwen_PI(baseframework):
             if state is not None
             else None
         )
-        # Step 4: Action Expert Forward and Loss
-        with torch.autocast("cuda", dtype=torch.float32):
+        # Step 4: Action Expert Forward (match training: bf16 autocast for DiT memory)
+        with torch.autocast("cuda", dtype=torch.bfloat16):
             pred_actions = self.action_model.predict_action(
                 vl_embs_list, state
             )  # (B, chunk_len, action_dim)

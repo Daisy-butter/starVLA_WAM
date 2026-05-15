@@ -100,6 +100,13 @@ class _QWen_VL_Interface(nn.Module):
         self.processor = processor
         self.config = config
 
+        if bool(qwenvl_config.get("enable_gradient_checkpointing", False)):
+            try:
+                self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+                print("[Qwen2.5-VL] gradient_checkpointing ENABLED (use_reentrant=False)", flush=True)
+            except Exception as e:
+                print(f"[Qwen2.5-VL] gradient_checkpointing_enable failed: {e}", flush=True)
+
         # align qwen2.5 with qwen3 / qwen3.5: top-level hidden_size does not exist
         # on Qwen2_5_VLConfig, but text_config.hidden_size does.
         self.model.config.hidden_size = self.model.config.text_config.hidden_size
