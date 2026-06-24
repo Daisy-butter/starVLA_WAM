@@ -41,11 +41,14 @@ from tqdm import tqdm
 from transformers import AutoProcessor, get_scheduler
 
 # Local Modules
-from starVLA.dataloader import build_dataloader
+from starVLA.dataloader import build_dataloader, bind_local_cuda_device, distributed_barrier
 from starVLA.model.framework.base_framework import build_framework
 from starVLA.model.framework.share_tools import apply_config_compat
 from starVLA.training.trainer_utils.config_tracker import AccessTrackedConfig, wrap_config
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, build_param_lr_groups, setup_optimizer_and_scheduler, normalize_dotlist_args
+
+# Bind GPU before Accelerator initializes NCCL (required for multi-node torchrun).
+bind_local_cuda_device()
 
 deepspeed_plugin = DeepSpeedPlugin()
 accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin)
@@ -80,7 +83,6 @@ def prepare_data(cfg, accelerator, output_dir) -> DataLoader:
     vla_train_dataloader = build_dataloader(cfg=cfg, dataset_py=cfg.datasets.vla_data.dataset_py)
 
     accelerator.dataloader_config.dispatch_batches = False
-    dist.barrier()
     return vla_train_dataloader
 
 
@@ -378,7 +380,7 @@ class VLATrainer(TrainerUtils):
             step_metrics["mse_score"] = score / num_pots
 
         del examples
-        dist.barrier()
+        distributed_barrier()
         return step_metrics
 
     def _log_training_config(self):
@@ -459,6 +461,7 @@ class VLATrainer(TrainerUtils):
 
 def main(cfg) -> None:
     logger.info("VLA Training :: Warming Up")
+    bind_local_cuda_device()
 
     cfg = wrap_config(cfg)
     logger.info("✅ Configuration wrapped for access tracking")
@@ -481,8 +484,9 @@ def main(cfg) -> None:
     trainer.train()
 
     logger.info("... and that's all, folks!")
-    dist.barrier()
-    dist.destroy_process_group()
+    distributed_barrier()
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

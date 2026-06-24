@@ -251,13 +251,12 @@ class TrainerUtils:
         load checkpoint:
         - if reload_modules is set, load by path part
         - otherwise → load the entire model parameters (overwrite model)
-
-        return:
-            replace, loaded_modules: list of module paths that successfully loaded parameters; if global load, then ["<full_model>"]
         """
         if not checkpoint_path:
-            return []
-        if dist.get_rank() == 0:
+            return model
+
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        if rank == 0:
             print(f"📦 loading checkpoint: {checkpoint_path}")
         try:
             if _is_safetensors_path(checkpoint_path):
@@ -269,35 +268,33 @@ class TrainerUtils:
         except Exception as e:
             raise RuntimeError(f"❌ loading checkpoint failed: {e}")
 
-        loaded_modules = []
-
-        if reload_modules:  # partial load
+        if reload_modules:
             module_paths = [p.strip() for p in reload_modules.split(",") if p.strip()]
             for path in module_paths:
-                reload_modules = path.split(".")
+                parts = path.split(".")
                 module = model
                 try:
-                    for module_name in reload_modules:  # find the module to modify level by level
+                    for module_name in parts:
                         module = getattr(module, module_name)
                     prefix = path + "."
                     sub_state_dict = {k[len(prefix) :]: v for k, v in checkpoint.items() if k.startswith(prefix)}
                     if sub_state_dict:
                         module.load_state_dict(sub_state_dict, strict=True)
-                        if dist.get_rank() == 0:
+                        if rank == 0:
                             print(f"✅ parameters loaded to module '{path}'")
-                        loaded_modules.append(path)
-                    else:
+                    elif rank == 0:
                         print(f"⚠️ parameters not found in checkpoint '{path}'")
                 except AttributeError:
-                    print(f"❌ cannot find module path: {path}")
-        else:  # full load
+                    if rank == 0:
+                        print(f"❌ cannot find module path: {path}")
+        else:
             try:
                 model.load_state_dict(checkpoint, strict=False)
-                if dist.get_rank() == 0:
+                if rank == 0:
                     print("✅ loaded <full_model> model parameters")
-                loaded_modules = ["<full_model>"]
             except Exception as e:
                 raise RuntimeError(f"❌ loading full model failed: {e}")
+        del checkpoint
         return model
 
     @staticmethod

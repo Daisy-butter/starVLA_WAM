@@ -73,6 +73,27 @@ LE_ROBOT3_TASKS_FILENAME = "meta/tasks.parquet"
 LE_ROBOT3_EPISODE_FILENAME = "meta/episodes/*/*.parquet"
 
 
+def _bind_local_cuda_device() -> None:
+    if torch.cuda.is_available():
+        torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", "0")))
+
+
+def _is_local_main() -> bool:
+    if not dist.is_initialized():
+        return True
+    return int(os.environ.get("LOCAL_RANK", "0")) == 0
+
+
+def _distributed_barrier() -> None:
+    if not dist.is_initialized():
+        return
+    _bind_local_cuda_device()
+    if torch.cuda.is_available():
+        dist.barrier(device_ids=[torch.cuda.current_device()])
+    else:
+        dist.barrier()
+
+
 def calculate_dataset_statistics(parquet_paths: list[Path]) -> dict:
     """Calculate the dataset statistics of all columns for a list of parquet files."""
     # Dataset statistics
@@ -806,10 +827,7 @@ class LeRobotSingleDataset(Dataset):
             }
 
 
-        # 2. Dataset statistics
-        def is_main():
-            return (not dist.is_initialized()) or dist.get_rank() == 0
-        
+        # 2. Dataset statistics (each node builds/loads from its local data copy)
         action_mode = _normalize_action_mode(self.data_cfg.get("action_mode", "abs") if self.data_cfg else "abs")
 
         stats_path = self.dataset_path / LE_ROBOT_STATS_FILENAME
@@ -835,37 +853,45 @@ class LeRobotSingleDataset(Dataset):
             pf for pf in parquet_files if "episode_033675.parquet" not in pf.name
         ]
 
-        if is_main():
-            le_statistics = _load_or_compute_statistics(
-                stats_path,
-                stats_cache_config=stats_cache_config,
-                parquet_paths=parquet_files_filtered,
-                dataset_name=self.dataset_name,
-                action_mode=action_mode,
-                lerobot_modality_meta=le_modality_meta,
-                action_keys_full=action_keys_full,
-                state_keys_full=state_keys_full,
-                action_indices=action_indices,
-                state_indices=state_indices,
-                action_mode_apply_keys=apply_keys,
-                action_mode_state_map=normalized_state_map,
-            )
-        else:
-            le_statistics = None
-
-        if dist.is_initialized():
-            dist.barrier()
-
-        if le_statistics is None:
+        le_statistics = None
+        if stats_path.exists():
             le_statistics = _load_stats_cache(
                 stats_path,
                 stats_cache_config,
                 invalidate_legacy=False,
             )
-            if le_statistics is None:
-                raise RuntimeError(
-                    f"Dataset statistics cache is missing or invalid after sync: {stats_path}"
+
+        if le_statistics is None:
+            if _is_local_main():
+                le_statistics = _load_or_compute_statistics(
+                    stats_path,
+                    stats_cache_config=stats_cache_config,
+                    parquet_paths=parquet_files_filtered,
+                    dataset_name=self.dataset_name,
+                    action_mode=action_mode,
+                    lerobot_modality_meta=le_modality_meta,
+                    action_keys_full=action_keys_full,
+                    state_keys_full=state_keys_full,
+                    action_indices=action_indices,
+                    state_indices=state_indices,
+                    action_mode_apply_keys=apply_keys,
+                    action_mode_state_map=normalized_state_map,
                 )
+            else:
+                le_statistics = None
+
+            _distributed_barrier()
+
+            if le_statistics is None:
+                le_statistics = _load_stats_cache(
+                    stats_path,
+                    stats_cache_config,
+                    invalidate_legacy=False,
+                )
+                if le_statistics is None:
+                    raise RuntimeError(
+                        f"Dataset statistics cache is missing or invalid after sync: {stats_path}"
+                    )
 
         for stat in le_statistics.values():
             DatasetStatisticalValues.model_validate(stat)
@@ -977,9 +1003,6 @@ class LeRobotSingleDataset(Dataset):
         Returns:
             list[tuple[str, int]]: A list of (trajectory_id, base_index) tuples.
         """
-        def is_main():
-            return (not dist.is_initialized()) or dist.get_rank() == 0
-    
         config_key = self._get_steps_config_key()
         steps_filename = "steps_data_index.pkl"
         steps_path = self.dataset_path / "meta" / steps_filename
@@ -997,8 +1020,8 @@ class LeRobotSingleDataset(Dataset):
                     f"Failed to load cached steps ({e}), will rebuild."
                 )
     
-        # ---------- only build by rank0  ----------
-        if is_main():
+        # ---------- only build on each node's local rank 0 ----------
+        if _is_local_main():
             all_steps = self._get_all_steps_single_process()
     
             cache_data = {
@@ -1019,9 +1042,8 @@ class LeRobotSingleDataset(Dataset):
     
             print(f"[RANK 0] Cached steps saved to {steps_path}")
     
-        # ---------- sync after rank0  ----------
-        if dist.is_initialized():
-            dist.barrier()
+        # ---------- sync after local builders ----------
+        _distributed_barrier()
     
         # ---------- read by all rank ----------
         with open(steps_path, "rb") as f:
@@ -2307,7 +2329,8 @@ class LeRobotMixtureDataset(Dataset):
         # Set the epoch and sample the first epoch
         self.set_epoch(0)
 
-        self.update_metadata(metadata_config)
+        cached_statistics_path = kwargs.get("cached_statistics_path")
+        self.update_metadata(metadata_config, cached_statistics_path=cached_statistics_path)
 
     @property
     def dataset_lengths(self) -> np.ndarray:
