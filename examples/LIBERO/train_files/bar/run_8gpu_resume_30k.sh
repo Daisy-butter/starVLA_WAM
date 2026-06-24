@@ -2,6 +2,7 @@
 # 8-GPU single-node WanDit4DiT resume from step 30k (run_id 20260623_023830).
 set -euo pipefail
 
+SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 STARVLA_DIR="$(cd "$(dirname "$0")/../../../.." && pwd)"
 cd "${STARVLA_DIR}"
 export PYTHONPATH="${STARVLA_DIR}:${PYTHONPATH:-}"
@@ -17,9 +18,8 @@ export GRAD_ACCUM=1
 export MAX_STEPS=80000
 export SAVE_INTERVAL=10000
 
-# shellcheck source=wam_paths.sh
-source "$(dirname "$0")/wam_paths.sh"
-
+export WAM_WORK_ROOT="${WAM_ROOT}/work_dirs"
+export run_root_dir="${WAM_WORK_ROOT}/libero/all/wan_dit4dit"
 export run_id="${WAM_RUN_ID}"
 output_dir="${run_root_dir}/${run_id}"
 train_log="${output_dir}/train.log"
@@ -28,7 +28,7 @@ export WANDB_MODE=disabled
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 mkdir -p "${output_dir}/scripts"
-cp "$0" "${output_dir}/scripts/"
+cp "${SCRIPT_PATH}" "${output_dir}/scripts/"
 
 ACCEL_CONFIG=$(python3 examples/Gemma4/_make_accelerate_config.py \
   --grad-accum "${GRAD_ACCUM}" \
