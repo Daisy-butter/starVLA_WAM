@@ -64,8 +64,28 @@ class Libero4in1DataConfig:
         ])
 
 
+class Libero4in1Dit4DiTDataConfig(Libero4in1DataConfig):
+    """LIBERO config with future observation frames for DiT4DiT-style joint video supervision."""
+
+    # Align future frame with the end of the action chunk (action_horizon=8).
+    future_observation_delta = 8
+    future_video_keys = [
+        "future_video.primary_image",
+        "future_video.wrist_image",
+    ]
+
+    def modality_config(self):
+        base = super().modality_config()
+        base["future_video"] = ModalityConfig(
+            delta_indices=[self.future_observation_delta],
+            modality_keys=self.future_video_keys,
+        )
+        return base
+
+
 ROBOT_TYPE_CONFIG_MAP = {
     "libero_franka": Libero4in1DataConfig(),
+    "libero_franka_dit4dit": Libero4in1Dit4DiTDataConfig(),
 }
 
 
@@ -100,6 +120,15 @@ DATASET_NAMED_MIXTURES = {
     ],
     "libero_10": [
         ("libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
+    ],
+    "libero_all_dit4dit": [
+        ("libero_object_no_noops_1.0.0_lerobot", 1.0, "libero_franka_dit4dit"),
+        ("libero_goal_no_noops_1.0.0_lerobot", 1.0, "libero_franka_dit4dit"),
+        ("libero_spatial_no_noops_1.0.0_lerobot", 1.0, "libero_franka_dit4dit"),
+        ("libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka_dit4dit"),
+    ],
+    "libero_spatial_dit4dit": [
+        ("libero_spatial_no_noops_1.0.0_lerobot", 1.0, "libero_franka_dit4dit"),
     ],
     "multi_robot": [
         ("LEROBOT_LIBERO_DATA/libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),

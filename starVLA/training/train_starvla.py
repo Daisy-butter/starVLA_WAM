@@ -154,6 +154,18 @@ class VLATrainer(TrainerUtils):
         )
 
         self._init_wandb()
+        self._init_tensorboard()
+
+    def _init_tensorboard(self):
+        """Initialize TensorBoard logging on the main process."""
+        self.tensorboard_writer = None
+        if self.accelerator.is_main_process:
+            from torch.utils.tensorboard import SummaryWriter
+
+            tb_dir = os.path.join(self.config.output_dir, "tensorboard")
+            os.makedirs(tb_dir, exist_ok=True)
+            self.tensorboard_writer = SummaryWriter(log_dir=tb_dir)
+            logger.info(f"TensorBoard logging enabled at {tb_dir}")
 
     def _calculate_total_batch_size(self):
         """Calculate global batch size."""
@@ -280,6 +292,10 @@ class VLATrainer(TrainerUtils):
                 metrics[f"learning_rate/{group_name}"] = last_lrs[i] if i < len(last_lrs) else last_lrs[-1]
             metrics["epoch"] = round(self.completed_steps / len(self.vla_train_dataloader), 2)
             wandb.log(metrics, step=self.completed_steps)
+            if self.tensorboard_writer is not None:
+                for key, value in metrics.items():
+                    if isinstance(value, (int, float)):
+                        self.tensorboard_writer.add_scalar(key, value, self.completed_steps)
             logger.info(f"Step {self.completed_steps}, Loss: {metrics})")
 
     def _create_data_iterators(self):
@@ -382,7 +398,14 @@ class VLATrainer(TrainerUtils):
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 output_dict = self.model.forward(batch_vla)
                 action_loss = output_dict["action_loss"]
-                total_loss = action_loss
+                if "total_loss" in output_dict and output_dict["total_loss"] is not None:
+                    total_loss = output_dict["total_loss"]
+                else:
+                    total_loss = action_loss
+                    video_loss = output_dict.get("video_loss")
+                    if video_loss is not None:
+                        video_weight = float(OmegaConf.select(self.config, "trainer.loss_scale.video", default=0.1))
+                        total_loss = action_loss + video_weight * video_loss
 
             self.accelerator.backward(total_loss)
 
@@ -398,9 +421,15 @@ class VLATrainer(TrainerUtils):
             if self.accelerator.sync_gradients:
                 self.lr_scheduler.step()
 
-        return {
+        metrics = {
             "action_dit_loss": action_loss.item(),
         }
+        video_loss = output_dict.get("video_loss")
+        if video_loss is not None:
+            metrics["video_dit_loss"] = float(video_loss.item())
+        if "total_loss" in output_dict and output_dict["total_loss"] is not None:
+            metrics["total_loss"] = float(output_dict["total_loss"].item())
+        return metrics
 
     def _finalize_training(self):
         """Training end processing."""
@@ -421,6 +450,9 @@ class VLATrainer(TrainerUtils):
 
         if self.accelerator.is_main_process:
             wandb.finish()
+            if getattr(self, "tensorboard_writer", None) is not None:
+                self.tensorboard_writer.flush()
+                self.tensorboard_writer.close()
 
         self.accelerator.wait_for_everyone()
 

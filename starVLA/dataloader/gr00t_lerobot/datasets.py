@@ -1198,7 +1198,9 @@ class LeRobotSingleDataset(Dataset):
     def _get_delta_indices(self) -> dict[str, np.ndarray]:
         """Restructure the delta indices to use modality.key as keys instead of just the modalities."""
         delta_indices: dict[str, np.ndarray] = {}
-        for config in self.modality_configs.values():
+        for modality, config in self.modality_configs.items():
+            if modality == "future_video":
+                continue
             for key in config.modality_keys:
                 delta_indices[key] = np.array(config.delta_indices)
         return delta_indices
@@ -1321,6 +1323,13 @@ class LeRobotSingleDataset(Dataset):
             df = df.rename(columns={'index': 'task'})  # rename 'index' column to 'task'
             df = df[['task_index', 'task']]  # reorder columns
             return df
+    @staticmethod
+    def _resolve_metadata_key(key: str) -> str:
+        """Map virtual modality keys (e.g. future_video.*) to dataset metadata keys."""
+        if key.startswith("future_video."):
+            return "video." + key.replace("future_video.", "", 1)
+        return key
+
     def _check_integrity(self):
         """Use the config to check if the keys are valid and detect silent data corruption."""
         ERROR_MSG_HEADER = f"Error occurred in initializing dataset {self.dataset_name}:\n"
@@ -1330,8 +1339,9 @@ class LeRobotSingleDataset(Dataset):
                 if key == "lapa_action" or key == "dream_actions":
                     continue  # no need for any metadata for lapa actions because it comes normalized
                 # Check if the key is valid
+                metadata_key = self._resolve_metadata_key(key)
                 try:
-                    self.lerobot_modality_meta.get_key_meta(key)
+                    self.lerobot_modality_meta.get_key_meta(metadata_key)
                 except Exception as e:
                     raise ValueError(
                         ERROR_MSG_HEADER + f"Unable to find key {key} in modality metadata:\n{e}"
@@ -1396,6 +1406,14 @@ class LeRobotSingleDataset(Dataset):
             "lang": language,
             "robot_tag": self.tag
         }
+
+        if "future_video" in self.modality_keys:
+            future_images = []
+            for video_key in self.modality_keys["future_video"]:
+                image = data[video_key][0]
+                image = Image.fromarray(image).resize((224, 224))
+                future_images.append(image)
+            sample["next_image"] = future_images
 
         if self.data_cfg is not None and self.data_cfg.get("include_state", False) not in ["False", False]:
             state = []
@@ -1601,6 +1619,7 @@ class LeRobotSingleDataset(Dataset):
         trajectory_id: int,
         key: str,
         base_index: int,
+        delta_indices_override: list[int] | np.ndarray | None = None,
     ) -> np.ndarray:
         """Get the video frames for a trajectory by a base index.
 
@@ -1614,7 +1633,10 @@ class LeRobotSingleDataset(Dataset):
             np.ndarray: The video frames for the trajectory and frame indices. Shape: (T, H, W, C)
         """
         # Get the step indices
-        step_indices = self.delta_indices[key] + base_index
+        if delta_indices_override is not None:
+            step_indices = np.array(delta_indices_override) + base_index
+        else:
+            step_indices = self.delta_indices[key] + base_index
         # print(f"{step_indices=}")
         # Get the trajectory index
         trajectory_index = self.get_trajectory_index(trajectory_id)
@@ -1813,6 +1835,16 @@ class LeRobotSingleDataset(Dataset):
         """
         if modality == "video":
             return self.get_video(trajectory_id, key, base_index)
+        elif modality == "future_video":
+            assert key.startswith("future_video."), f"Future video key must start with future_video., got {key}"
+            video_key = "video." + key.replace("future_video.", "", 1)
+            future_cfg = self.modality_configs["future_video"]
+            return self.get_video(
+                trajectory_id,
+                video_key,
+                base_index,
+                delta_indices_override=future_cfg.delta_indices,
+            )
         elif modality == "state" or modality == "action":
             return self.get_state_or_action(trajectory_id, modality, key, base_index)
         elif modality == "language":
